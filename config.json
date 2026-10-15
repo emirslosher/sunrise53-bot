@@ -1,0 +1,15 @@
+{
+  "kickChannel": "sunrise53",
+  "checkIntervalSeconds": 45,
+  "notificationChannelName": "🔴・kick-yayın",
+  "pingRoleName": "🔔 Yayın Bildirimi",
+  "roles": [
+    { "name": "👑 Ev Sahibi", "color": "#FF4757", "hoist": true },
+    { "name": "🛡️ Nöbetçi", "color": "#FFA502", "hoist": true },
+    { "name": "⭐ Kemik Tayfa", "color": "#2ED573", "hoist": true },
+    { "name": "☕ Destekçi", "color": "#1E90FF", "hoist": true },
+    { "name": "🌅 Müdavim", "color": "#9B59B6", "hoist": true },
+    { "name": "👥 Ahali", "color": "#A4B0BE", "hoist": false },
+    { "name": "🔔 Yayın Bildirimi", "color": "#5352ED", "hoist": false }
+  ]
+}
