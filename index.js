@@ -168,8 +168,10 @@ client.once('clientReady', () => {
   console.log(`⏱️ Kontrol Döngüsü: ${config.checkIntervalSeconds} saniyede bir`);
   console.log(`🧹 Komutsuz sessiz mod; butonlar ve yayın bildirimleri hazır.`);
   console.log(`===============================================`);
-
-  client.user.setActivity(`sunrise53 Kick Yayınını`, { type: 3 }); // Watching
+  client.user.setPresence({
+    status: 'dnd',
+    activities: [{ name: 'sunrise53 Kick Yayınını', type: 3 }]
+  });
 
   // İlk kontrol ve periyodik zamanlayıcı
   checkKickStream();
