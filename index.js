@@ -21,11 +21,13 @@ const MASTER_OWNER_ID = '852790966250504193';
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildInvites
   ]
 });
 
 const STATE_FILE = path.join(__dirname, 'state.json');
+const INVITE_DATA_FILE = path.join(__dirname, 'invites_data.json');
 
 function loadState() {
   try {
@@ -47,6 +49,35 @@ function saveState(state) {
 }
 
 let botState = loadState();
+
+function loadInviteData() {
+  try {
+    if (fs.existsSync(INVITE_DATA_FILE)) {
+      return JSON.parse(fs.readFileSync(INVITE_DATA_FILE, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Invite data okunamadı:', err);
+  }
+  return { memberInvitedBy: {}, inviterStats: {} };
+}
+
+function saveInviteData(data) {
+  try {
+    fs.writeFileSync(INVITE_DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Invite data yazılamadı:', err);
+  }
+}
+
+const guildInvitesCache = new Map();
+
+function getInviteLogChannel(guild) {
+  return guild.channels.cache.find(c =>
+    c.name === config.inviteLogChannelName ||
+    c.name.includes('giriş-çıkış') ||
+    c.name.includes('davet-log')
+  );
+}
 
 // Master Panel State (Hafızada kullanıcı seçimlerini tutar)
 const masterPanelState = new Map();
@@ -403,6 +434,16 @@ const slashCommands = [
       opt.setName('herkese_ping')
         .setDescription('@everyone etiketlensin mi? (Varsayılan: Evet)')
         .setRequired(false)
+    ),
+
+  // 15. DAVET BİLGİSİ
+  new SlashCommandBuilder()
+    .setName('davetler')
+    .setDescription('Bir kullanıcının sunucudaki güncel ve toplam davet sayısını gösterir.')
+    .addUserOption(opt =>
+      opt.setName('kullanıcı')
+        .setDescription('Davet sayısına bakılacak üye (Varsayılan: Kendiniz)')
+        .setRequired(false)
     )
 ];
 
@@ -421,6 +462,19 @@ client.once('clientReady', async () => {
     activities: [{ name: 'sunrise53 Kick Yayınını', type: 3 }] // Watching
   });
 
+  // Davetleri Önbelleğe Al
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const invites = await guild.invites.fetch();
+      const codeMap = new Map();
+      invites.forEach(inv => codeMap.set(inv.code, inv.uses || 0));
+      guildInvitesCache.set(guild.id, codeMap);
+      console.log(`[Davet] '${guild.name}' sunucusunda ${invites.size} davet kodu önbelleğe alındı.`);
+    } catch (err) {
+      console.warn(`[Davet] '${guild.name}' davetleri çekilemedi:`, err.message);
+    }
+  }
+
   // Slash Komutlarını Kaydet (Tüm sunuculara anında tanımlanır)
   try {
     for (const guild of client.guilds.cache.values()) {
@@ -434,6 +488,141 @@ client.once('clientReady', async () => {
   // İlk kontrol ve periyodik zamanlayıcı
   checkKickStream();
   setInterval(checkKickStream, config.checkIntervalSeconds * 1000);
+});
+
+// Davet Olayları Takibi (Yeni Davet Oluşturulduğunda / Silindiğinde)
+client.on('inviteCreate', (invite) => {
+  const codeMap = guildInvitesCache.get(invite.guild.id) || new Map();
+  codeMap.set(invite.code, invite.uses || 0);
+  guildInvitesCache.set(invite.guild.id, codeMap);
+});
+
+client.on('inviteDelete', (invite) => {
+  const codeMap = guildInvitesCache.get(invite.guild.id);
+  if (codeMap) codeMap.delete(invite.code);
+});
+
+// 📥 ÜYE KATILDIĞINDA (GİRİŞ LOGU)
+client.on('guildMemberAdd', async (member) => {
+  const guild = member.guild;
+  const logChannel = getInviteLogChannel(guild);
+
+  let inviter = null;
+  let usedCode = null;
+
+  try {
+    const cachedInvites = guildInvitesCache.get(guild.id) || new Map();
+    const currentInvites = await guild.invites.fetch().catch(() => null);
+
+    if (currentInvites) {
+      const usedInvite = currentInvites.find(inv => {
+        const prevUses = cachedInvites.get(inv.code) || 0;
+        return (inv.uses || 0) > prevUses;
+      });
+
+      // Önbelleği güncelle
+      const newCodeMap = new Map();
+      currentInvites.forEach(inv => newCodeMap.set(inv.code, inv.uses || 0));
+      guildInvitesCache.set(guild.id, newCodeMap);
+
+      if (usedInvite && usedInvite.inviter) {
+        inviter = usedInvite.inviter;
+        usedCode = usedInvite.code;
+      }
+    }
+  } catch (err) {
+    console.error('[Davet] Üye girişi davet tespit hatası:', err.message);
+  }
+
+  const inviteData = loadInviteData();
+  let inviterCount = 0;
+
+  if (inviter) {
+    inviteData.memberInvitedBy[member.id] = inviter.id;
+    if (!inviteData.inviterStats[inviter.id]) {
+      inviteData.inviterStats[inviter.id] = { total: 0, current: 0, leaves: 0 };
+    }
+    inviteData.inviterStats[inviter.id].total += 1;
+    inviteData.inviterStats[inviter.id].current += 1;
+    inviterCount = inviteData.inviterStats[inviter.id].current;
+    saveInviteData(inviteData);
+  }
+
+  if (logChannel) {
+    const embed = new EmbedBuilder()
+      .setColor('#2ED573') // Canlı Yeşil
+      .setAuthor({ name: '📥 Bir Üye Katıldı!', iconURL: member.user.displayAvatarURL() })
+      .setDescription(`Aramıza hoş geldin ${member}! (**${member.user.username}**)`)
+      .addFields(
+        {
+          name: '👤 Davet Eden',
+          value: inviter ? `<@${inviter.id}> (\`${inviter.username}\`)` : '`Bilinmiyor / Doğrudan Katılım`',
+          inline: true
+        },
+        {
+          name: '📊 Davet Durumu',
+          value: inviter ? `Bu kişinin toplam **${inviterCount}** daveti oldu!` : '`Veri yok`',
+          inline: true
+        },
+        {
+          name: '👥 Toplam Üye Sayısı',
+          value: `Sunucumuz **${guild.memberCount}** kişi oldu!`,
+          inline: false
+        }
+      )
+      .setFooter({ text: `ID: ${member.id} • sunrise53 Giriş Logu` })
+      .setTimestamp();
+
+    await logChannel.send({ embeds: [embed] }).catch(console.error);
+  }
+});
+
+// 📤 ÜYE AYRILDIĞINDA (ÇIKIŞ LOGU)
+client.on('guildMemberRemove', async (member) => {
+  const guild = member.guild;
+  const logChannel = getInviteLogChannel(guild);
+
+  const inviteData = loadInviteData();
+  const inviterId = inviteData.memberInvitedBy[member.id];
+  let remainingInvites = null;
+
+  if (inviterId) {
+    if (!inviteData.inviterStats[inviterId]) {
+      inviteData.inviterStats[inviterId] = { total: 0, current: 0, leaves: 0 };
+    }
+    inviteData.inviterStats[inviterId].leaves += 1;
+    inviteData.inviterStats[inviterId].current = Math.max(0, inviteData.inviterStats[inviterId].current - 1);
+    remainingInvites = inviteData.inviterStats[inviterId].current;
+    saveInviteData(inviteData);
+  }
+
+  if (logChannel) {
+    const embed = new EmbedBuilder()
+      .setColor('#FF4757') // Canlı Kırmızı
+      .setAuthor({ name: '📤 Bir Üye Ayrıldı!', iconURL: member.user.displayAvatarURL() })
+      .setDescription(`Görüşmek üzere **${member.user.username}** sunucudan ayrıldı.`)
+      .addFields(
+        {
+          name: '👤 Davet Eden Kişi',
+          value: inviterId ? `<@${inviterId}>` : '`Bilinmiyor / Kayıt Yok`',
+          inline: true
+        },
+        {
+          name: '📉 Kalan Davet Sayısı',
+          value: inviterId ? `Davet ettiği kişi ayrıldı, kalan daveti: **${remainingInvites}**` : '`Kayıt yok`',
+          inline: true
+        },
+        {
+          name: '👥 Kalan Üye Sayısı',
+          value: `Sunucuda **${guild.memberCount}** kişi kaldı.`,
+          inline: false
+        }
+      )
+      .setFooter({ text: `ID: ${member.id} • sunrise53 Çıkış Logu` })
+      .setTimestamp();
+
+    await logChannel.send({ embeds: [embed] }).catch(console.error);
+  }
 });
 
 // Etkileşimler (Slash Komutları, Menüler ve Butonlar)
@@ -907,6 +1096,27 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply({ content: `✅ Duyuru başarıyla <#${duyuruChannel.id}> kanalına gönderildi!`, ephemeral: true });
   }
 
+  // KOMUT: /davetler
+  if (commandName === 'davetler') {
+    const targetUser = interaction.options.getUser('kullanıcı') || interaction.user;
+    const inviteData = loadInviteData();
+    const stats = inviteData.inviterStats[targetUser.id] || { total: 0, current: 0, leaves: 0 };
+
+    const embed = new EmbedBuilder()
+      .setColor('#2ED573')
+      .setAuthor({ name: `${targetUser.username} Davet İstatistikleri`, iconURL: targetUser.displayAvatarURL() })
+      .setTitle('📊 Davet Bilgileri')
+      .addFields(
+        { name: '✨ Kalan / Aktif Davet', value: `\`${stats.current}\` kişi`, inline: true },
+        { name: '📥 Toplam Davet', value: `\`${stats.total}\` kişi`, inline: true },
+        { name: '📤 Ayrılan Kişi', value: `\`${stats.leaves}\` kişi`, inline: true }
+      )
+      .setFooter({ text: 'sunrise53 Davet Takip Sistemi' })
+      .setTimestamp();
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
   // KOMUT: /yardım
   if (commandName === 'yardım') {
     const isOwner = interaction.user.id === MASTER_OWNER_ID;
@@ -924,9 +1134,10 @@ client.on('interactionCreate', async (interaction) => {
             '• `/oyun-öner` ➔ Gökçe\'ye yayın için oyun önerir ve oylamaya sunar.'
         },
         {
-          name: '🎲 Eğlence & Konsept',
+          name: '🎲 Eğlence & Topluluk',
           value:
             '• `/omubumu` ➔ Gökçe\'nin "O mu Bu mu" konseptine özel ikilemler sunar.\n' +
+            '• `/davetler [kullanıcı]` ➔ Senin veya başkasının güncel davet sayısını gösterir.\n' +
             '• `/zar` ➔ 1-6 veya dilediğiniz sayıda zar atar.\n' +
             '• `/yazı-tura` ➔ Yazı mı tura mı şansınızı dener.'
         },
