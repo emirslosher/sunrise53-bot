@@ -3,6 +3,7 @@
   "checkIntervalSeconds": 45,
   "notificationChannelName": "🔴・kick-yayın",
   "inviteLogChannelName": "🚪・giriş-çıkış",
+  "voiceChannelId": "1560275090283962459",
   "pingRoleName": "🔔 Yayın Bildirimi",
   "roles": [
     { "name": "👑 Ev Sahibi", "color": "#FF4757", "hoist": true },

@@ -12,6 +12,11 @@ const {
   UserSelectMenuBuilder,
   RoleSelectMenuBuilder
 } = require('discord.js');
+const {
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+  entersState
+} = require('@discordjs/voice');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config.json');
@@ -22,7 +27,8 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildInvites
+    GatewayIntentBits.GuildInvites,
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
@@ -488,7 +494,45 @@ client.once('clientReady', async () => {
   // İlk kontrol ve periyodik zamanlayıcı
   checkKickStream();
   setInterval(checkKickStream, config.checkIntervalSeconds * 1000);
+
+  // Ses Odasına Bağlan (7/24 Kulaklığı Kapalı)
+  joinTargetVoiceChannel();
 });
+
+// Hedef Ses Kanalına Kulaklığı Kapalı Olarak Katılma (7/24 Ses Odası)
+function joinTargetVoiceChannel() {
+  for (const guild of client.guilds.cache.values()) {
+    const channelId = config.voiceChannelId || '1560275090283962459';
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel) continue;
+
+    try {
+      const connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: true,
+        selfMute: true
+      });
+
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5000)
+          ]);
+        } catch (e) {
+          connection.destroy();
+          setTimeout(joinTargetVoiceChannel, 5000);
+        }
+      });
+
+      console.log(`[Ses] '${guild.name}' sunucusunda #${channel.name} (${channel.id}) odasına kulaklığı kapalı olarak girildi.`);
+    } catch (err) {
+      console.error(`[Ses] ${guild.name} ses kanalına bağlanırken hata:`, err.message);
+    }
+  }
+}
 
 // Davet Olayları Takibi (Yeni Davet Oluşturulduğunda / Silindiğinde)
 client.on('inviteCreate', (invite) => {
